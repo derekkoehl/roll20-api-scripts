@@ -1,0 +1,496 @@
+/////////////////////////////////////////////////
+/***********************************************/
+var Localization = {
+    'coins': 'GP Equiv',
+    'coin_copper': 'CP',
+    'coin_silver': 'SP',
+    'coin_gold': 'GP',
+    'coin_platinum': 'PP',
+
+    'weight': 'Weight',
+    'loadLvl1': 'Light',
+    'loadLvl2': 'Medium',
+    'loadLvl3': 'Heavy',
+    'empty' : 'Empty',
+
+    'storage_backpack': 'Backpack',
+    'storage_quiver': 'Quiver',
+    'storage_boltcase': 'Boltcase',
+    'storage_pouch': 'Pouch',
+    'storage_bagofholding1': 'Bag of Holding I',
+    'storage_bagofholding2': 'Bag of Holding II',
+    'storage_bagofholding3': 'Bag of Holding III',
+    'storage_bagofholding4': 'Bag of Holding IV',
+    'storage_chest': 'Chest',
+    'storage_cart': 'Cart'
+};
+
+/////////////////////////////////////////////////
+/***********************************************/
+
+var SlimInventoryManager = {
+    /////////BEGIN USER CONFIG/////////
+    playerList: [
+        '-Ju8BJ4c2ncO5coXQuAq', /* 1: Derek K. */
+        //'-JglZwTIFm0ivfDzMssH', /* 2: Ulfgar Ungart */
+        //'-JggSWGNp1gDvfdZSTPf', /* 3: Baba Frostbeard */
+        //'-JglZlSBA2oSX2ClDirs', /* 4: Goden Arthelast */
+        //'-JglZlRofAw79n0D-2ol', /* 5: Firalphien Variel */
+        //'-JglZwTIFm0ivfDzMssH,-JggSWGNp1gDvfdZSTPf,-JglZlSBA2oSX2ClDirs,-JglZlRofAw79n0D-2ol' /* 6: Community */
+    ],
+    logPlayerIds: true,
+    inventoryTokenImage: 'https://s3.amazonaws.com/files.d20.io/images/10804517/s3bulRYoNOlc73bIWkgpRw/thumb.png?1436916424',
+    coin: {
+        weight: 0.02, // in lbs
+        value_copper: 0.01,
+        value_silver: 0.1,
+        value_gold: 1,
+        value_platinum: 10
+    },
+    storageItems: [
+        {
+            name: 'backpack', // key of the storagekind, does not contain storage!
+            maxWeight: 60, // maximum weight allowed in this kind
+            type: '' // if bag of holding (or similar), then ' constantweight'
+        },
+        {
+            name: 'quiver',
+            maxWeight: 3,
+            type: ''
+        },
+        {
+            name: 'boltcase',
+            maxWeight: 1,
+            type: ''
+        },
+        {
+            name: 'pouch',
+            maxWeight: 6,
+            type: ''
+        },
+        {
+            name: 'bagofholding1',
+            maxWeight: 250,
+            type: ' constantweight'
+        },
+        {
+            name: 'bagofholding2',
+            maxWeight: 500,
+            type: ' constantweight'
+        },
+        {
+            name: 'bagofholding3',
+            maxWeight: 1000,
+            type: ' constantweight'
+        },
+        {
+            name: 'bagofholding4',
+            maxWeight: 1500,
+            type: ' constantweight'
+        },
+        {
+            name: 'chest',
+            maxWeight: 300,
+            type: ''
+        },
+        {
+            name: 'cart',
+            maxWeight: 600,
+            type: ''
+        }
+    ],
+    //////////END USER CONFIG//////////    
+
+    objsToBeCreated: [],
+    lastRun: Date.now(),
+    run: function ()
+    {
+        var time = Date.now();
+        if (time - SlimInventoryManager.lastRun > 1000)
+        {
+            SlimInventoryManager.process();
+            _.each(SlimInventoryManager.objsToBeCreated, function (o)
+            {
+                SlimInventoryManager.createInventory(o.pageId, o.name, o.left, o.top, o.id, o.weight);
+            });
+            SlimInventoryManager.objsToBeCreated = [];
+            SlimInventoryManager.lastRun = time;
+        }
+    },
+    createInventory: function (g_page_id, g_name, g_left, g_top, g_id, g_wgt)
+    {
+        setTimeout(function ()
+        {
+            toBack(SlimInventoryManager.fixedCreateObj('graphic', {
+                name: g_name,
+                imgsrc: SlimInventoryManager.inventoryTokenImage,
+                pageid: g_page_id,
+                left: g_left + 280,
+                top: g_top,
+                width: 70,
+                height: 70,
+                bar1_value: 0,
+                bar1_max: g_wgt,
+                layer: 'objects',
+                gmnotes: 'inv rep_' + g_id
+            }));
+        }, 5);
+    },
+    fixedCreateObj: function ()
+    {
+        var obj = createObj.apply(this, arguments);
+        if (obj && !obj.fbpath)
+        {
+            obj.fbpath = obj.changed._fbpath.replace(/([^\/]*\/){4}/, '/');
+        }
+        return obj;
+    },
+    process: function ()
+    {
+        var typeRegEx = /(main)|(inv)|(worn)|(drop)|(ignore)|(status\d?)/,
+            modifierRegEx = /(unstowable)|(constantweight)|(liquid)|(storage)/ig,
+            paramModifierRegEx = /(?:(weight)%20([\d\.,]+))|(?:(coins)%20(\S+))|(?:(rep)_(\S+))/ig,
+            amountRegEx = /(\d+)x/;
+            var containedCoinValue = 0;
+
+        function getType(notes)
+        {
+            return _.reduceRight(typeRegEx.exec(notes), function (memo, val) { return memo || val; }, null) || 'item';
+        }
+
+        function getModifier(notes)
+        {
+            var match = null,
+                results = {
+                    unstowable: false,
+                    constantweight: false,
+                    liquid: false,
+                    storage: false
+                };
+            modifierRegEx.lastIndex = 0;
+            while (match = modifierRegEx.exec(notes))
+                results[match[0].toLowerCase()] = !!_.reduceRight(match, function (memo, val) { return memo || val; }, null);
+            return results;
+        }
+
+        function getParamModifier(notes)
+        {
+            var match = null,
+                results = {
+                    weight: null,
+                    coins: null,
+                    rep: null
+                };
+            paramModifierRegEx.lastIndex = 0;
+            while (match = paramModifierRegEx.exec(notes))
+            {
+                var index = -1,
+                    value = _.reduceRight(match, function (memo, val, i) { if (!memo) index = i; return memo || val; }, null);
+                results[match[index - 1].toLowerCase()] = value;
+            }
+            return results;
+        }
+
+        // returns true if the center of 'item' lies inside of 'container' dimensions
+        function itemIsInContainer(item, container)
+        {
+            var halfWidth = container.get('width') / 2,
+                halfHeight = container.get('height') / 2,
+                left = container.get('left') - halfWidth,
+                top = container.get('top') - halfHeight,
+                right = container.get('left') + halfWidth,
+                bottom = container.get('top') + halfHeight;
+
+            return item.get('left') >= left &&
+                   item.get('top') >= top &&
+                   item.get('left') <= right &&
+                   item.get('top') <= bottom;
+        }
+
+        var characterAreas = [],
+            statuses = [],
+            equipmentSlots = [],
+            inventories = [],
+            items = [],
+            equipped = [];
+
+        /***
+         * Go thru all tokens on the current page and sort them into their groups, parse modifiers
+         * and store informations in their objects for the algorithm
+         **/
+        var pageGraphics = findObjs({ _pageid: Campaign().get('playerpageid'), _type: 'graphic' });
+        _.each(pageGraphics, function (graphic)
+        {
+            var notes = graphic.get('gmnotes'),
+                specialType = getType(notes),
+                modifier = getModifier(notes),
+                paramModifier = getParamModifier(notes);
+
+            var obj = {
+                type: specialType,
+                graphic: graphic
+            };
+
+            var options = {
+                statusmarkers: '!',
+
+                showplayers_name: true,
+                showname: true,
+
+                showplayers_bar1: false,
+                showplayers_bar2: false,
+                showplayers_bar3: false,
+
+                playersedit_bar1: false,
+                playersedit_bar2: false,
+                playersedit_bar3: false,
+            };
+
+            switch (specialType)
+            {
+                case 'main':
+                    characterAreas.push(obj);
+                    options.showname = false;
+                    break;
+                case 'status':
+                case 'status2':
+                    statuses.push(obj);
+                        options.showplayers_bar1 = true;
+                    break;
+                case 'worn':
+                    obj.properties = {
+                        isSlot: true
+                    };
+                    equipmentSlots.push(obj);
+                    break;
+                case 'inv':
+                    obj.properties = {
+                        representId: paramModifier.rep
+                    };
+                    options.showplayers_bar1 = true;
+                case 'drop':
+                    inventories.push(obj);
+                    break;
+                case 'ignore':
+                    break;
+                default:
+                    obj.properties = {
+                        equippedAt: null,
+                        isLiquidContainer: modifier.liquid,
+                        isUnstowable: modifier.unstowable,
+                        coinType: paramModifier.coins,
+                        coinAmount: paramModifier.coins ? parseFloat(graphic.get('bar3_value')) : 0,
+                        baseWeight: parseFloat(paramModifier.weight || 0),
+                        amount: parseInt(_.reduceRight(amountRegEx.exec(graphic.get('name')), function (memo, val) { return memo || val; }, null) || 1),
+                        hasInventory: modifier.storage,
+                        inventories: [],
+                        hasConstantWeight: modifier.constantweight
+                    };
+                    items.push(obj);
+                    break;
+            }
+
+            // show the name if the namefield is set (and longer than a char)
+            options.showname = options.showname && _.isString(graphic.get('name')) && graphic.get('name').length > 1;
+            graphic.set(options);
+        });
+
+        /***
+         * Go thru all items (tokens that represent bare items that one can carry) and calculate their weights / containers
+         **/
+        _.each(items, function (item)
+        {
+            // update coin weight based on amount
+            if (item.properties.coinType)
+            {
+            var options = {
+                showplayers_bar3: true,
+                playersedit_bar3: true,
+                };
+                item.graphic.set('bar1_value', Math.ceil(SlimInventoryManager.coin.weight * item.properties.coinAmount));
+                item.graphic.set('name', Localization['coin_' + item.properties.coinType] + ': ' + item.properties.coinAmount);
+                item.graphic.set(options);
+                containedCoinValue += SlimInventoryManager.coin['value_' + item.properties.coinType] * item.properties.coinAmount;
+            }
+            // if the item is an empty liquid container, reset its tint and name
+            if (item.properties.isLiquidContainer)
+            {
+                var options = {
+                showplayers_bar1: true,
+                playersedit_bar1: true,
+                };
+                item.graphic.set(options);
+                if (item.graphic.get('bar1_value') == 0)
+                    item.graphic.set('name', Localization.empty);
+            }
+
+            // check if this item is equipped
+            _.each(equipmentSlots, function (slot)
+            {
+                if (itemIsInContainer(item.graphic, slot.graphic))
+                {
+                    item.properties.equippedAt = slot;
+
+                    // if this item has an inventory, add its id to the equipped list, otherwise check if a storage has to be created
+                    if (item.properties.hasInventory)
+                        equipped.push(item.graphic.get('_id'));
+                    else
+                    {
+                        var notes = item.graphic.get('gmnotes');
+                        _.each(SlimInventoryManager.storageItems, function (storageKind)
+                        {
+                            for (var i = 0; i < 10 && notes.indexOf(storageKind.name) !== -1; ++i)
+                            {
+                                SlimInventoryManager.objsToBeCreated.push({
+                                    pageId: item.graphic.get('_pageid'),
+                                    name: Localization['storage_' + storageKind.name],
+                                    left: item.graphic.get('left'),
+                                    top: item.graphic.get('top'),
+                                    id: item.graphic.get('_id'),
+                                    weight: storageKind.maxWeight
+                                });
+                                notes = notes.replace(storageKind.name, 'storage' + storageKind.type);
+                            }
+                        });
+                        item.graphic.set('gmnotes', notes);
+                    }
+                }
+            });
+        });
+
+        _.each(inventories, function (inventory)
+        {
+            inventory.containedItems = [];
+            inventory.containedWeight = 0;
+            inventory.containedWeightMax = parseFloat(inventory.graphic.get('bar1_max'));
+            _.each(items, function (item)
+            {
+                if (itemIsInContainer(item.graphic, inventory.graphic))
+                {
+                    if (inventory.type === 'inv' && item.properties.isUnstowable)
+                    {
+                        item.graphic.set('top', inventory.graphic.get('top') + inventory.graphic.get('height') / 2 + 35);
+                    }
+                    else
+                    {
+                        inventory.containedItems.push(item);
+                        inventory.containedWeight += parseFloat(item.graphic.get('bar1_value') * item.properties.amount) + item.properties.baseWeight;
+                    }
+                }
+                else if (inventory.type === 'inv')
+                {
+                    if (item.properties.hasInventory && item.graphic.get('_id') === inventory.properties.representId)
+                    {
+                        item.properties.inventories.push(inventory);
+                    }
+                }
+            });
+            // set weight for backpack inventories and such
+            if (inventory.type === 'inv')
+            {
+                var isEquipped = equipped.indexOf(inventory.properties.representId) !== -1,
+                    isFull = inventory.containedWeight > inventory.containedWeightMax && inventory.containedWeightMax > 0;
+
+                inventory.graphic.set('bar1_value', inventory.containedWeight.toFixed(1));
+              inventory.graphic.set({ status_dead: isFull });
+
+                // hide the inventory, if its representative is not equipped
+                if (!isEquipped)
+                {
+                    inventory.graphic.set('layer', 'gmlayer');
+                }
+                else
+                {
+                    inventory.graphic.set('layer', 'objects');
+                }
+            }
+            else if (inventory.type === 'drop')
+            {
+                inventory.graphic.set('layer', 'map');
+            }
+
+            _.each(inventory.containedItems, function (item)
+            {
+                // copy layer from containing inventory
+                item.graphic.set('layer', inventory.graphic.get('layer'));
+            });
+        });
+
+        _.each(characterAreas, function (charArea)
+        {
+            charArea.containedWeight = 0;
+            _.each(items, function (item)
+            {
+                if (itemIsInContainer(item.graphic, charArea.graphic) && item.graphic.get('layer') === 'objects')
+                {
+                    var controller = SlimInventoryManager.playerList[parseInt(charArea.graphic.get('bar3_value')) - 1] || '';
+
+                    item.graphic.set('controlledby', controller);
+
+                    if (!item.properties.containedIn && item.properties.equippedAt)
+                    {
+                        charArea.containedWeight += parseFloat(item.graphic.get('bar1_value') * item.properties.amount) + item.properties.baseWeight;
+
+                        if (item.properties.hasInventory && !item.properties.hasConstantWeight)
+                        {
+                            _.each(item.properties.inventories, function (inventory)
+                            {
+                                _.each(inventory.containedItems, function (containerItem)
+                                {
+                                    containerItem.graphic.set('controlledby', controller);
+                                    charArea.containedWeight += parseFloat(containerItem.graphic.get('bar1_value') * containerItem.properties.amount) + containerItem.properties.baseWeight;
+                               })
+                            });
+                        }
+                    }
+                }
+            });
+
+            _.each(statuses, function (status)
+            {
+                if (status.graphic.get('bar3_value') === charArea.graphic.get('bar3_value'))
+                    switch (status.type)
+                    {
+                        case 'status':
+                            var totalWeight = charArea.containedWeight.toFixed(1),
+                               maxWeight = parseFloat(status.graphic.get('bar1_max')),
+                                LoadPct = totalWeight / maxWeight;
+                                LoadPct <= 0.34 ? LoadLvl = Localization.loadLvl1 : LoadPct <= 0.67? LoadLvl = Localization.loadLvl2 : LoadLvl = Localization.loadLvl3;
+                                isFull = totalWeight > maxWeight && maxWeight > 0;
+                            status.graphic.set('name', Localization.weight + ': ' + totalWeight + ' | ' + LoadLvl);
+                            status.graphic.set('bar1_value', totalWeight);
+                           status.graphic.set({ status_dead: isFull });
+                            break;
+                        case 'status2':
+                            status.graphic.set('name', Localization.coins + ': ' + Math.floor(containedCoinValue));
+                            break;
+                    }
+            });
+        });
+    }
+};
+
+on('ready', function ()
+{
+    if (SlimInventoryManager.logPlayerIds)
+    {
+        log('************* PLAYER IDs *************');
+        filterObjs(function (obj)
+        {
+            if (obj.get('type') == 'player')
+                log(obj.get('_displayname') + ': ' + obj.get('_id'));
+            return false;
+        });
+        log('**************************************');
+    }
+    setInterval(function () { SlimInventoryManager.run() }, 500);
+    on('change:graphic:lastmove', function (obj)
+    {
+        SlimInventoryManager.run();
+    });
+    on('add:graphic', function (obj)
+    {
+        obj.set('width', 70);
+        obj.set('height', 70);
+    });
+});
